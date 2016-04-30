@@ -4,14 +4,48 @@
  */
 package org.anarres.parallelgzip;
 
+import javax.annotation.Nonnegative;
+import javax.annotation.Nonnull;
 import java.io.*;
+import java.util.Arrays;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.zip.*;
 
 /**
  *
  * @author shevek
  */
-public class ParallelGZIPInputStream extends InflaterInputStream {
+public class ParallelGZIPInputStream extends FilterInputStream {
+
+    private final ExecutorService executor;
+    private final int nthreads;
+    private final ArrayBlockingQueue<Future<byte[]>> emitQueue;
+
+    private final Inflater inflater;
+    private final int bufferSize = 32 * 1024;
+    private final byte[] buffer = new byte[bufferSize];
+
+    public ParallelGZIPInputStream(@Nonnull InputStream in, @Nonnull ExecutorService executor, @Nonnegative int nthreads) throws IOException {
+        super(in);
+        readHeader(in);
+        inflater = new Inflater(true);
+        this.executor = executor;
+        this.nthreads = nthreads;
+        this.emitQueue = new ArrayBlockingQueue<Future<byte[]>>(nthreads);
+    }
+
+    public ParallelGZIPInputStream(@Nonnull InputStream in, @Nonnegative int nthreads) throws IOException {
+        this(in, ParallelGZIPEnvironment.getSharedThreadPool(), nthreads);
+    }
+
+    public ParallelGZIPInputStream(InputStream in) throws IOException {
+        this(in, Runtime.getRuntime().availableProcessors());
+    }
+
+    // ------------------------
+
     /**
      * CRC-32 for uncompressed data.
      */
@@ -34,33 +68,6 @@ public class ParallelGZIPInputStream extends InflaterInputStream {
     }
 
     /**
-     * Creates a new input stream with the specified buffer size.
-     * @param in the input stream
-     * @param size the input buffer size
-     *
-     * @exception ZipException if a GZIP format error has occurred or the
-     *                         compression method used is unsupported
-     * @exception IOException if an I/O error has occurred
-     * @exception IllegalArgumentException if size is <= 0
-     */
-    public ParallelGZIPInputStream(InputStream in, int size) throws IOException {
-        super(in, new Inflater(true), size);
-        readHeader(in);
-    }
-
-    /**
-     * Creates a new input stream with a default buffer size.
-     * @param in the input stream
-     *
-     * @exception ZipException if a GZIP format error has occurred or the
-     *                         compression method used is unsupported
-     * @exception IOException if an I/O error has occurred
-     */
-    public ParallelGZIPInputStream(InputStream in) throws IOException {
-        this(in, 512);
-    }
-
-    /**
      * Reads uncompressed data into an array of bytes. If <code>len</code> is not
      * zero, the method will block until some input can be decompressed; otherwise,
      * no bytes are read and <code>0</code> is returned.
@@ -78,21 +85,34 @@ public class ParallelGZIPInputStream extends InflaterInputStream {
      * @exception IOException if an I/O error has occurred.
      *
      */
-    public int read(byte[] buf, int off, int len) throws IOException {
+    public int read(@Nonnull byte[] buf, int off, int len) throws IOException {
         ensureOpen();
         if (eos) {
             return -1;
         }
-        int n = super.read(buf, off, len);
-        if (n == -1) {
-            if (readTrailer())
-                eos = true;
-            else
-                return this.read(buf, off, len);
+
+        int readLength = -1;
+        int compressedLen = super.read(this.buffer, off, len);
+        if (compressedLen == -1) {
+            checkTrailer();
+            eos = true;
         } else {
-            crc.update(buf, off, n);
+
+            inflater.setInput(this.buffer, 0, compressedLen);
+            try {
+                readLength = inflater.inflate(buf, off, len);
+            } catch (DataFormatException e) {
+                e.printStackTrace();
+            }
+
+            if (inflater.getRemaining() == 8) {
+                byte[] cropped = Arrays.copyOfRange(this.buffer, 0, compressedLen + 24);
+                byte[] trailer = Arrays.copyOfRange(cropped, cropped.length - 32, cropped.length);
+                System.arraycopy(trailer, 0, this.buffer, 0, trailer.length);
+            }
+            crc.update(buf, off, readLength);
         }
-        return n;
+        return readLength;
     }
 
     /**
@@ -173,40 +193,20 @@ public class ParallelGZIPInputStream extends InflaterInputStream {
     }
 
     /*
-     * Reads GZIP member trailer and returns true if the eos
-     * reached, false if there are more (concatenated gzip
-     * data set)
+     * Validate GZIP trailer.
+     *
+     * Currently concatenated gzip data sets are not supported.
      */
-    private boolean readTrailer() throws IOException {
-        InputStream in = this.in;
-        int n = inf.getRemaining();
-        if (n > 0) {
-            in = new SequenceInputStream(
-                    new ByteArrayInputStream(buf, len - n, n), in);
+    private void checkTrailer() throws IOException {
+        InputStream in = new ByteArrayInputStream(this.buffer);
+        long crcValue = readUInt(in);
+        if ((crcValue != crc.getValue())) {
+            throw new ZipException("Corrupt GZIP trailer (crc)");
         }
-        // Uses left-to-right evaluation order
-        if ((readUInt(in) != crc.getValue()) ||
-                // rfc1952; ISIZE is the input size modulo 2^32
-                (readUInt(in) != (inf.getBytesWritten() & 0xffffffffL)))
-            throw new ZipException("Corrupt GZIP trailer");
-
-        // If there are more bytes available in "in" or
-        // the leftover in the "inf" is > 26 bytes:
-        // this.trailer(8) + next.header.min(10) + next.trailer(8)
-        // try concatenated case
-        if (this.in.available() > 0 || n > 26) {
-            int m = 8;                  // this.trailer
-            try {
-                m += readHeader(in);    // next.header
-            } catch (IOException ze) {
-                return true;  // ignore any malformed, do nothing
-            }
-            inf.reset();
-            if (n > m)
-                inf.setInput(buf, len - n + m, n - m);
-            return false;
+        // rfc1952; ISIZE is the input size modulo 2^32
+        if ((readUInt(in) != (inflater.getBytesWritten() & 0xffffffffL))) {
+            throw new ZipException("Corrupt GZIP trailer (bytes written)");
         }
-        return true;
     }
 
     /*

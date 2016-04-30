@@ -51,7 +51,7 @@ public class ParallelGZIPInputStreamTest {
                 gzip.write(data);
                 gzip.close();
                 Stopwatch stopwatch = Stopwatch.createStarted();
-                GZIPInputStream in = new GZIPInputStream(out.toInput());
+                GZIPInputStream in = new GZIPInputStream(out.toInput(), 1024 * 1024);
                 byte[] copy = ByteStreams.toByteArray(in);
                 orig = stopwatch.elapsed(TimeUnit.MILLISECONDS);
                 assertArrayEquals(data, copy);
