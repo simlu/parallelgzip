@@ -4,25 +4,16 @@
  */
 package org.anarres.parallelgzip;
 
-import java.io.ByteArrayOutputStream;
-import java.io.FilterOutputStream;
-import java.io.IOException;
-import java.io.InterruptedIOException;
-import java.io.OutputStream;
+import javax.annotation.Nonnegative;
+import javax.annotation.Nonnull;
+import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
+import java.util.concurrent.*;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.GZIPOutputStream;
-import javax.annotation.Nonnegative;
-import javax.annotation.Nonnull;
 
 /**
  * A multi-threaded version of {@link GZIPOutputStream}.
@@ -157,13 +148,13 @@ public class ParallelGZIPOutputStream extends FilterOutputStream {
 
     // Master thread only
     @Override
-    public void write(byte[] b) throws IOException {
+    public void write(@Nonnull byte[] b) throws IOException {
         write(b, 0, b.length);
     }
 
     // Master thread only
     @Override
-    public void write(byte[] b, int off, int len) throws IOException {
+    public void write(@Nonnull byte[] b, int off, int len) throws IOException {
         crc.update(b, off, len);
         bytesWritten += len;
         while (len > 0) {
