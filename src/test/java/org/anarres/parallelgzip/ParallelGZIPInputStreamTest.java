@@ -35,10 +35,12 @@ public class ParallelGZIPInputStreamTest {
         }
     }
 
-    private void testPerformance(int len) throws Exception {
+    private void testPerformance(int len, boolean randomData) throws Exception {
         Random r = new Random();
         byte[] data = new byte[len];
-        r.nextBytes(data);
+        if (randomData) {
+            r.nextBytes(data);
+        }
         LOG.info("Data is " + data.length + " bytes.");
 
         ByteArrayOutputBuffer out = new ByteArrayOutputBuffer();    // Reallocation will occur on the first iteration.
@@ -65,6 +67,8 @@ public class ParallelGZIPInputStreamTest {
                 gzip.close();
                 Stopwatch stopwatch = Stopwatch.createStarted();
                 ParallelGZIPInputStream in = new ParallelGZIPInputStream(out.toInput());
+                // todo: remove after block guessing is implemented
+                in.setBlockSizes(gzip.blockSizes);
                 byte[] copy = ByteStreams.toByteArray(in);
                 long elapsed = stopwatch.elapsed(TimeUnit.MILLISECONDS);
                 double perc = orig * 100 / (double) elapsed;
@@ -76,16 +80,27 @@ public class ParallelGZIPInputStreamTest {
 
     @Test
     public void testPerformance() throws Exception {
-        testPerformance(0);
-        testPerformance(1);
-        testPerformance(4);
-        testPerformance(16);
-        testPerformance(64 * 1024 - 1);
-        testPerformance(64 * 1024);
-        testPerformance(64 * 1024 + 1);
-        testPerformance(4096 * 1024 + 17);
-        testPerformance(16384 * 1024 + 17);
-        testPerformance(65536 * 1024 + 17);
+        testPerformance(0, false);
+        testPerformance(1, false);
+        testPerformance(4, false);
+        testPerformance(16, false);
+        testPerformance(64 * 1024 - 1, false);
+        testPerformance(64 * 1024, false);
+        testPerformance(64 * 1024 + 1, false);
+        testPerformance(4096 * 1024 + 17, false);
+        testPerformance(16384 * 1024 + 17, false);
+        testPerformance(65536 * 1024 + 17, false);
+
+        testPerformance(0, true);
+        testPerformance(1, true);
+        testPerformance(4, true);
+        testPerformance(16, true);
+        testPerformance(64 * 1024 - 1, true);
+        testPerformance(64 * 1024, true);
+        testPerformance(64 * 1024 + 1, true);
+        testPerformance(4096 * 1024 + 17, true);
+        testPerformance(16384 * 1024 + 17, true);
+        testPerformance(65536 * 1024 + 17, true);
     }
 
     private void testThreads(int nthreads) throws Exception {

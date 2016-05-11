@@ -9,6 +9,7 @@ import javax.annotation.Nonnull;
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.concurrent.*;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
@@ -24,6 +25,10 @@ public class ParallelGZIPOutputStream extends FilterOutputStream {
 
     // private static final Logger LOG = LoggerFactory.getLogger(ParallelGZIPOutputStream.class);
     private final static int GZIP_MAGIC = 0x8b1f;
+
+    // todo: remove after block guessing is implemented
+    // array list that contains the block sizes
+    ArrayList<Integer> blockSizes = new ArrayList<Integer>();
 
     @Nonnull
     private static Deflater newDeflater() {
@@ -197,7 +202,9 @@ public class ParallelGZIPOutputStream extends FilterOutputStream {
                 return;
             // It's an ordered queue. This MUST be the same element as above.
             emitQueue.remove();
-            out.write(future.get());
+            byte[] toWrite = future.get();
+            blockSizes.add(toWrite.length);  // todo: remove after block guessing is implemented
+            out.write(toWrite);
         }
     }
 
@@ -208,7 +215,9 @@ public class ParallelGZIPOutputStream extends FilterOutputStream {
             while (emitQueue.size() > taskCountAllowed) {
                 // LOG.info("Waiting for taskCount=" + emitQueue.size() + " -> " + taskCountAllowed);
                 Future<byte[]> future = emitQueue.remove(); // Valid because emitQueue.size() > 0
-                out.write(future.get());  // Blocks until this task is done.
+                byte[] toWrite = future.get();  // Blocks until this task is done.
+                blockSizes.add(toWrite.length);  // todo: remove after block guessing is implemented
+                out.write(toWrite);
             }
             // We may have achieved more opportunistically available blocks
             // while waiting for a block above. Let's emit them here.

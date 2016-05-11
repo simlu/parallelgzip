@@ -7,7 +7,7 @@ package org.anarres.parallelgzip;
 import javax.annotation.Nonnegative;
 import javax.annotation.Nonnull;
 import java.io.*;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -24,8 +24,12 @@ public class ParallelGZIPInputStream extends FilterInputStream {
     private final ArrayBlockingQueue<Future<byte[]>> emitQueue;
 
     private final Inflater inflater;
-    private final int bufferSize = 32 * 1024;
+    private final int bufferSize = 2 * 64 * 1024;
     private final byte[] buffer = new byte[bufferSize];
+    private int totalBytesWritten = 0;
+
+    // todo: remove after block guessing is implemented
+    private ArrayList<Integer> blockSizes;
 
     public ParallelGZIPInputStream(@Nonnull InputStream in, @Nonnull ExecutorService executor, @Nonnegative int nthreads) throws IOException {
         super(in);
@@ -42,6 +46,11 @@ public class ParallelGZIPInputStream extends FilterInputStream {
 
     public ParallelGZIPInputStream(InputStream in) throws IOException {
         this(in, Runtime.getRuntime().availableProcessors());
+    }
+
+    // todo: remove after block guessing is implemented
+    public void setBlockSizes(ArrayList<Integer> blockSizes) {
+        this.blockSizes = blockSizes;
     }
 
     // ------------------------
@@ -92,25 +101,26 @@ public class ParallelGZIPInputStream extends FilterInputStream {
         }
 
         int readLength = -1;
-        int compressedLen = super.read(this.buffer, off, len);
-        if (compressedLen == -1) {
-            checkTrailer();
-            eos = true;
-        } else {
-
-            inflater.setInput(this.buffer, 0, compressedLen);
-            try {
-                readLength = inflater.inflate(buf, off, len);
-            } catch (DataFormatException e) {
-                e.printStackTrace();
-            }
-
-            if (inflater.getRemaining() == 8) {
-                byte[] cropped = Arrays.copyOfRange(this.buffer, 0, compressedLen + 24);
-                byte[] trailer = Arrays.copyOfRange(cropped, cropped.length - 32, cropped.length);
-                System.arraycopy(trailer, 0, this.buffer, 0, trailer.length);
+        try {
+            readLength = inflater.inflate(buf, off, len);
+            while (readLength == 0 && !eos) {
+                if (blockSizes.isEmpty()) {
+                    int compressedLen = super.read(this.buffer, off, 10);
+                    System.arraycopy(this.buffer, compressedLen - 8, this.buffer, 0, 8);
+                    checkTrailer();
+                    eos = true;
+                } else {
+                    int compressedLen = super.read(this.buffer, off, blockSizes.remove(0));
+                    totalBytesWritten += inflater.getBytesWritten();
+                    inflater.reset();
+                    inflater.setInput(this.buffer, 0, compressedLen);
+                    readLength = inflater.inflate(buf, off, len);
+                }
             }
             crc.update(buf, off, readLength);
+
+        } catch (DataFormatException e) {
+            e.printStackTrace();
         }
         return readLength;
     }
@@ -204,7 +214,8 @@ public class ParallelGZIPInputStream extends FilterInputStream {
             throw new ZipException("Corrupt GZIP trailer (crc)");
         }
         // rfc1952; ISIZE is the input size modulo 2^32
-        if ((readUInt(in) != (inflater.getBytesWritten() & 0xffffffffL))) {
+        totalBytesWritten += inflater.getBytesWritten();
+        if ((readUInt(in) != (totalBytesWritten & 0xffffffffL))) {
             throw new ZipException("Corrupt GZIP trailer (bytes written)");
         }
     }
@@ -222,7 +233,7 @@ public class ParallelGZIPInputStream extends FilterInputStream {
      */
     private int readUShort(InputStream in) throws IOException {
         int b = readUByte(in);
-        return ((int)readUByte(in) << 8) | b;
+        return (readUByte(in) << 8) | b;
     }
 
     /*
